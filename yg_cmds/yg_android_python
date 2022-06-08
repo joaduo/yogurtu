@@ -1,0 +1,160 @@
+#!/bin/bash
+# smart_alarm
+# Copyright (c) 2020, Joaquin G. Duo
+# Code Licensed under LGPL License. See LICENSE file.
+
+cmd_name=$(basename $0)
+this_cmd=$0
+
+DEPLOY_ANDROID_SCRIPTS_DIR=${DEPLOY_ANDROID_SCRIPTS_DIR:-/sdcard/qpython/scripts}
+QPYTHON_DIR=${QPYTHON_PATH:-/data/data/org.qpython.qpy/files/bin}
+QPYTHON_PATH=${QPYTHON_PATH:-$QPYTHON_DIR/qpython.sh}
+END_SH_PATH=${END_SH_PATH:-$QPYTHON_DIR/end.sh}
+TEMP_DIR=${TEMP_DIR:-$HOME}
+
+function exec_cmd(){
+    echo "$(date) Executing:"
+    echo "    $(printf ' %q' "$@")"
+    "$@"
+    local ret=$?
+    if [[ $ret != 0 ]] ; then
+        echo "Command failed: $*
+        ret val: $ret
+        "
+        exit 1
+    fi
+    return $ret
+}
+
+function patch_end_sh(){
+    contents="$(adb_shell cat $END_SH_PATH)"
+    temp_py=""
+    if [[ $contents == *"No such file or directory"* ]]; then
+        # Qpython was not ran for the first time
+        # Manually init it...
+        echo "Initializing Qpython..."
+        temp_py=$TEMP_DIR/temp_init.py
+        echo "
+import sys
+print(sys)" > $temp_py
+        exec_cmd $this_cmd -c -f -s -d $temp_py
+        seconds=20
+        echo "Waiting $seconds sec for qpython initialization..."
+        sleep $seconds
+        contents="$(adb_shell cat $END_SH_PATH)"
+        if [[ $contents == *"No such file or directory"* ]]; then
+            echo "Failed to init Qpython, something is wrong in the phone. Try starting a qpython terminal manually"
+            return 1
+        fi
+    fi
+    new_contents=""
+    if [[ $(echo "$contents" | tr -d '\r') != $new_contents ]]; then
+        exec_cmd adb_shell cp $END_SH_PATH $END_SH_PATH.backup
+        echo 'Clearing end.sh...'
+        if ! ADB_SHELL_USE_PIPE=1 adb_shell "echo '$new_contents' > $END_SH_PATH" > /dev/null ; then
+            echo "Failed to clear $END_SH_PATH"
+        fi
+        if [[ $temp_py != "" ]]; then
+            echo "Stopping detached running app..."
+            exec_cmd adb_shell am force-stop org.qpython.qpy
+            rm $temp_py
+        fi
+        return 0
+    else
+      echo "Nothing to do on $END_SH_PATH"
+      return 0
+    fi
+    return 1
+}
+
+DETACH=0
+COPY=0
+FORCE_COPY=${FORCE_COPY:-0}
+FORCE_STOP=${FORCE_STOP:-0}
+ONLY_COPY=${ONLY_COPY:-0}
+PATCH_END_SH=${PATCH_END_SH:-0}
+# Check flags
+while test $# -gt 0; do
+case "$1" in
+    -c|--copy)
+    COPY=1
+    shift
+    ;;
+    -f|--force-copy)
+    FORCE_COPY=1
+    shift
+    ;;
+    -o|--only-copy)
+    ONLY_COPY=1
+    shift
+    ;;
+    -d|--detach)
+    DETACH=1
+    shift
+    ;;
+    -s|--force-stop)
+    FORCE_STOP=1
+    shift
+    ;;
+    --patch-end-sh)
+    PATCH_END_SH=1
+    shift
+    ;;
+    -h|--help)
+    echo "$cmd_name [-c|--copy] [-f|--force-copy] [-o|--only-copy] [-d|--detach] [-s|--force-stop] [--patch-end-sh] [-h|--help]"
+    exit 0
+    ;;
+    *)
+    break
+    ;;
+esac
+done
+
+if [[ $PATCH_END_SH == 1 ]]; then
+    patch_end_sh
+    exit $?
+fi
+
+FILE_PATH=$1
+shift
+
+if [[ $FILE_PATH == "pip" ]];then
+    FILE_PATH=$DEPLOY_ANDROID_SCRIPTS_DIR/pip_console.py
+fi
+
+if [[ $FORCE_STOP == 1 ]];then
+    exec_cmd adb_shell am force-stop org.qpython.qpy
+fi
+
+if [[ $FILE_PATH == "" ]]; then
+    if [[ $DETACH == 1 ]]; then
+        echo "Error! You can't execute python shell in detached mode."
+        exec_cmd adb_shell am start -n org.qpython.qpy/org.qpython.qpylib.MPyApi -a android.intent.action.MAIN -c android.intent.category.LAUNCHER \
+        -e "com.quseit.common.extra.CONTENT_URL2" "" \
+        -e "com.quseit.common.extra.CONTENT_URL0" "shortcut" \
+        -e "com.quseit.common.extra.CONTENT_URL1" "script"
+    else
+        exec_cmd adb_shell $QPYTHON_PATH
+    fi
+else
+    BASENAME=$(basename $FILE_PATH)
+    REMOTE_PATH="$DEPLOY_ANDROID_SCRIPTS_DIR/$BASENAME"
+
+    if [[ $COPY == 1 || $ONLY_COPY == 1 ]];then
+        FORCE_COPY=$FORCE_COPY yg_android_cp $FILE_PATH $REMOTE_PATH
+        if [[ $ONLY_COPY == 1 ]]; then
+            echo "--only-copy mode, finishing."
+            exit 0
+        fi
+    fi
+
+    if [[ $DETACH == 1 ]]; then
+        exec_cmd yg_android_screen && \
+        exec_cmd adb_shell am start -n org.qpython.qpy/org.qpython.qpylib.MPyApi -a android.intent.action.MAIN -c android.intent.category.LAUNCHER \
+        -e "com.quseit.common.extra.CONTENT_URL2" "$REMOTE_PATH" \
+        -e "com.quseit.common.extra.CONTENT_URL0" "shortcut" \
+        -e "com.quseit.common.extra.CONTENT_URL1" "script"
+    else
+        exec_cmd adb_shell $QPYTHON_PATH $REMOTE_PATH "$@"
+    fi
+fi

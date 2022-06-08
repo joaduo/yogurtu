@@ -1,0 +1,55 @@
+#!/bin/bash
+# smart_alarm
+# Copyright (c) 2020, Joaquin G. Duo
+# Code Licensed under LGPL License. See LICENSE file.
+
+cmd_name=$(basename $0)
+this_cmd=$0
+
+function echoerr() { printf "%s\n" "$*" >&2; }
+
+function exec_cmd(){
+    echoerr "$(date) Executing:"
+    echoerr "    $(printf ' %q' "$@")"
+    "$@"
+    local ret=$?
+    if [[ $ret != 0 ]] ; then
+        echoerr "Command failed: $*
+        ret val: $ret
+        "
+        exit 1
+    fi
+    return $ret
+}
+
+# Check flags
+while test $# -gt 0; do
+case "$1" in
+    -r|--run)
+    RUN=1
+    shift
+    ;;
+    -h|--help)
+    echoerr "$cmd_name [-r|--run] [-h|--help] <package string>"
+    exit 0
+    ;;
+    *)
+    search="$search$1"
+    shift
+    ;;
+esac
+done
+
+
+echoerr "Searching for '$search'..."
+pkg=$(adb_shell pm list packages | grep $search | cut -d':' -f2 | tr -d '\r\000-\010\013\014\016-\037')
+if [[ $pkg ]] ; then
+    if [[ $RUN ]] ; then
+        adb_shell monkey -p $pkg -c android.intent.category.LAUNCHER 1
+    else
+        echo "$pkg"
+    fi
+else
+    echoerr "Could not find package for $search"
+    exit 1
+fi

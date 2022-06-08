@@ -1,0 +1,166 @@
+#!/bin/bash
+# smart_alarm
+# Copyright (c) 2020, Joaquin G. Duo
+# Code Licensed under LGPL License. See LICENSE file.
+
+cmd_name=$(basename $0)
+
+function print_help(){
+    echo "$cmd_name [--all] [-U|--user] [-P|--package] [-A|--android-server] [-C|--cmds-server] [-M|--mail-server] [-I|--pir-server] [-B|--bot-server] [-W|--web-client-upload] [-v|--verbose] [-h|--help]"
+    echo "
+
+-P|--android-packages  install android package on the connected phone (through adb)
+-v|--verbose           be verbose while running commands
+-h|--help              this help
+
+Examples:
+    $cmd_name -P -v
+
+Remember setting up configuration files at /etc/apu/*.conf
+    "
+}
+
+QPYTHON_APK_URL=https://github.com/qpython-android/qpython/releases/download/v1.4.3/qpython-app-release.apk
+QPYTHON_APK_FILENAME=qpython-app-release-v1.4.3.apk
+QPYTHON_PACKAGE_NAME=org.qpython.qpy
+
+SSHD_APK_URL=http://www.galexander.org/software/simplesshd/SimpleSSHD-19.apk
+SSHD_APK_FILENAME=SimpleSSHD-19.apk
+SSHD_PACKAGE_NAME=org.galexander.sshd
+
+DEPLOY_ANDROID_SDCARD_DIR=${DEPLOY_ANDROID_SDCARD_DIR:-/sdcard}
+DEPLOY_ANDROID_DOWNLOAD_DIR=${DEPLOY_ANDROID_DOWNLOAD_DIR:-$DEPLOY_ANDROID_SDCARD_DIR/Download}
+DEPLOY_ANDROID_REINSTALL=${DEPLOY_ANDROID_REINSTALL}
+DEPLOY_ANDROID_DEBUG=${DEPLOY_ANDROID_DEBUG:-1}
+TEMP_DIR=${TEMP_DIR:-/tmp/yogurtu-temp}
+
+LOG_FILE=$TEMP_DIR/$cmd_name.log
+
+function ask_variable(){
+    local var_name=$1
+    local question="$2"
+    local default_value="$3"
+    if [[ ${!var_name} != "" ]] ; then
+        var_value="${!var_name}"
+    else
+        read -p "    $question" var_value
+    fi
+    var_value=${var_value:-$default_value}
+    case "${var_value,,}" in
+        y|yes|true|1)
+        echo 1
+        ;;
+        n|no|false|0)
+        echo 0
+        ;;
+        *)
+        echo "$var_value"
+        ;;
+    esac
+}
+
+function exec_cmd(){
+    echo 'Executing:'
+    echo "    $(printf ' %q' "$@")"
+    echo '---------------------' >> $LOG_FILE
+    echo "$(date) Executing: $(printf ' %q' "$@")" >> $LOG_FILE
+    if [[ $VERBOSE == 0 ]] ; then
+        "$@" >> $LOG_FILE 2>&1
+        local ret=$?
+    else
+        "$@" | tee -a $LOG_FILE 2>&1
+        local ret=$?
+    fi
+    if [[ $ret != 0 ]] ; then
+        echo "Command failed: $*
+        ret val: $ret
+        "
+        echo "Check $LOG_FILE:"
+        tail $LOG_FILE
+        exit 1
+    fi
+    return $ret
+}
+
+function install_apk(){
+  local pkg_name=$1
+  local pkg_fname=$2
+  local apk_url=$3
+  local pkg_path=$TEMP_DIR/$pkg_fname
+
+  local already_installed=$(adb_shell pm list packages | grep $pkg_name)
+  if [[ $already_installed != "" ]] ; then
+      local reinstall=$(ask_variable DEPLOY_ANDROID_REINSTALL "Uninstall and reinstall $pkg_fname?(y/N) " N)
+      if [[ $reinstall == 0 ]]; then
+        return 0
+      fi
+  fi
+
+  if [[ ! -e $pkg_path ]] ; then
+      echo "Downloading $apk_url to $pkg_path"
+      exec_cmd wget $apk_url -O $pkg_path
+  fi
+
+  echo "Sending $pkg_path to android device..."
+  exec_cmd yg_android_cp $pkg_path $DEPLOY_ANDROID_DOWNLOAD_DIR
+
+  local remote_path=$DEPLOY_ANDROID_DOWNLOAD_DIR/$pkg_fname
+  if [[ $already_installed != "" && $reinstall == 1 ]] ; then
+      echo "Reinstalling $pkg_fname..."
+      exec_cmd adb_shell pm uninstall $pkg_name && \
+      exec_cmd adb_shell pm install $remote_path
+      ret_val=0
+  else
+      exec_cmd adb_shell pm install $remote_path
+      ret_val=0
+  fi
+  return $ret_val
+}
+
+function android_packages(){
+  exec_cmd apt-get install adb -y
+  if [[ $(adb_shell ls -d $DEPLOY_ANDROID_DOWNLOAD_DIR) == *"No such file or directory"* ]]; then
+    echo "Directory $DEPLOY_ANDROID_DOWNLOAD_DIR does not exist on android device, please specify it via DEPLOY_ANDROID_DOWNLOAD_DIR env var"
+    return 1
+  fi
+
+  if install_apk $QPYTHON_PACKAGE_NAME $QPYTHON_APK_FILENAME $QPYTHON_APK_URL ;then
+      yg_android_python --patch-end-sh
+  fi
+
+  if install_apk $SSHD_PACKAGE_NAME $SSHD_APK_FILENAME $SSHD_APK_URL ;then
+      echo "NOTICE: Enter into your android device and setup SSHD:
+      1. enable start on boot
+      2. use temporary password login and install your user ssh keys in org.galexander.sshd/files/authorized_keys
+        a. make sure setup ssh key for the salarm user /home/salarm/.ssh/
+      4. allow su for the app if required"
+  fi
+}
+
+if [[ ! $1 ]]; then
+  print_help
+  exit 1
+fi
+
+VERBOSE=${VERBOSE:-0}
+while test $# -gt 0; do
+case "$1" in
+    -v|--verbose)
+    VERBOSE=1
+    shift
+    ;;
+    -P|--android-packages)
+    android_packages
+    shift
+    ;;
+    -h|--help)
+    print_help
+    exit 0
+    ;;
+    *)
+    print_help
+    exit 1
+    ;;
+esac
+done
+

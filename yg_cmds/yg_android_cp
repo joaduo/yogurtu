@@ -1,0 +1,63 @@
+#!/bin/bash
+# smart_alarm
+# Copyright (c) 2020, Joaquin G. Duo
+# Code Licensed under LGPL License. See LICENSE file.
+
+
+HELP_DOC="
+Usage: $0 <local src> <android dst>
+
+    -f|--force-copy   overwrites on android side even if file exists
+    -h|--help         shows this help message
+    "
+
+FORCE_COPY=${FORCE_COPY:-0}
+# Check flags
+while test $# -gt 0; do
+case "$1" in
+    -h|--help)
+    echo "$HELP_DOC"
+    exit 0
+    ;;
+    -f|--force-copy)
+    FORCE_COPY=1
+    shift
+    ;;
+    *)
+    break
+    ;;
+esac
+done
+
+FILE_PATH=$1
+shift
+
+FILE_DST=$1
+shift
+
+if [[ ! $FILE_PATH || ! $FILE_DST ]] ; then
+  echo "Please provide arguments"
+  echo "$HELP_DOC"
+  exit 1
+fi
+
+DO_COPY=0
+if [[ $FORCE_COPY == 1 ]];then
+    DO_COPY=1
+    echo "Forcing copying file..."
+elif [[ $(adb_shell "test -d $FILE_DST && echo 1") ]] ; then
+   if [[ ! $(adb_shell "test -f $FILE_DST/$(basename $FILE_PATH) && echo 1") ]]; then
+      DO_COPY=1
+      echo "Copying missing file to directory..."
+   else
+      echo "File $FILE_DST/$(basename $FILE_PATH) exists. Use -f to force the copy."
+   fi
+elif [[ ! $(adb_shell "test -f $FILE_DST && echo 1") ]]; then
+    DO_COPY=1
+    echo "Copying missing file..."
+else
+    echo "File exists. Use -f to force the copy."
+fi
+if [[ $DO_COPY == 1 ]];then
+    adb push $FILE_PATH $FILE_DST
+fi
